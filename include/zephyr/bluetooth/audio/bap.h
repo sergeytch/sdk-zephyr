@@ -2012,6 +2012,55 @@ int bt_bap_unicast_client_unregister_cb(struct bt_bap_unicast_client_cb *cb);
  */
 int bt_bap_unicast_client_discover(struct bt_conn *conn, enum bt_audio_dir dir);
 
+/** @brief Attribute handles of one remote ASE and the ASE Control Point. */
+struct bt_bap_unicast_client_handles {
+	/** ASE Control Point value handle */
+	uint16_t cp_handle;
+	/** ASE Control Point CCC descriptor handle */
+	uint16_t cp_ccc_handle;
+	/** ASE value handle */
+	uint16_t ase_handle;
+	/** ASE CCC descriptor handle */
+	uint16_t ase_ccc_handle;
+	/** ASE ID */
+	uint8_t ase_id;
+};
+
+/**
+ * @brief Set up one remote endpoint from known handles, without GATT discovery
+ *
+ * Creates the endpoint for @p handles in the Idle state and registers the ASE and ASE
+ * Control Point notifications locally, without writing the remote CCC descriptors. The
+ * server must already have notifications enabled for this client. No ATT traffic is sent.
+ * The endpoint and discover callbacks are called before this function returns. PAC
+ * records, locations and contexts are not reported.
+ *
+ * If the handles are wrong, ASE Control Point operations fail silently or time out: the
+ * caller is expected to fall back to bt_bap_unicast_client_discover() on a new connection.
+ *
+ * @param conn     Connection object
+ * @param dir      Direction of the remote endpoint
+ * @param handles  Handles of the endpoint and control point
+ *
+ * @retval 0 Success
+ * @retval -ENOTCONN, -EINVAL, -EBUSY, -ENOMEM on failure
+ */
+int bt_bap_unicast_client_discover_cached(struct bt_conn *conn, enum bt_audio_dir dir,
+					  const struct bt_bap_unicast_client_handles *handles);
+
+/**
+ * @brief Get the handles of the first discovered endpoint of a direction
+ *
+ * @param conn     Connection object
+ * @param dir      Direction of the remote endpoint
+ * @param handles  Filled with the handles on success
+ *
+ * @retval 0 Success
+ * @retval -ENOENT no endpoint or control point known for @p dir
+ */
+int bt_bap_unicast_client_get_handles(struct bt_conn *conn, enum bt_audio_dir dir,
+				      struct bt_bap_unicast_client_handles *handles);
+
 /** @} */ /* End of group bt_bap_unicast_client */
 /**
  * @brief BAP Broadcast APIs

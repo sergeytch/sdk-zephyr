@@ -4704,6 +4704,130 @@ int bt_bap_unicast_client_discover(struct bt_conn *conn, enum bt_audio_dir dir)
 	return 0;
 }
 
+static struct bt_bap_unicast_client_ep *unicast_client_first_ep(struct unicast_client *client,
+								enum bt_audio_dir dir)
+{
+#if CONFIG_BT_BAP_UNICAST_CLIENT_ASE_SNK_COUNT > 0
+	if (dir == BT_AUDIO_DIR_SINK) {
+		return &client->snks[0];
+	}
+#endif /* CONFIG_BT_BAP_UNICAST_CLIENT_ASE_SNK_COUNT > 0 */
+#if CONFIG_BT_BAP_UNICAST_CLIENT_ASE_SRC_COUNT > 0
+	if (dir == BT_AUDIO_DIR_SOURCE) {
+		return &client->srcs[0];
+	}
+#endif /* CONFIG_BT_BAP_UNICAST_CLIENT_ASE_SRC_COUNT > 0 */
+	return NULL;
+}
+
+int bt_bap_unicast_client_discover_cached(struct bt_conn *conn, enum bt_audio_dir dir,
+					  const struct bt_bap_unicast_client_handles *handles)
+{
+	struct bt_bap_unicast_client_ep *client_ep;
+	struct unicast_client *client;
+	struct bt_ascs_ase_status status;
+	struct net_buf_simple buf;
+	const bt_addr_le_t *peer;
+	struct bt_bap_ep *ep;
+	int err;
+
+	if (!conn || conn->state != BT_CONN_CONNECTED) {
+		return -ENOTCONN;
+	}
+	if (conn->role != BT_CONN_ROLE_CENTRAL || handles == NULL || handles->cp_handle == 0U ||
+	    handles->cp_ccc_handle == 0U || handles->ase_handle == 0U ||
+	    handles->ase_ccc_handle == 0U || handles->ase_id == 0U ||
+	    (dir != BT_AUDIO_DIR_SINK && dir != BT_AUDIO_DIR_SOURCE)) {
+		return -EINVAL;
+	}
+
+	client = &uni_cli_insts[bt_conn_index(conn)];
+	if (atomic_test_and_set_bit(client->flags, UNICAST_CLIENT_FLAG_BUSY)) {
+		return -EBUSY;
+	}
+	client->dir = dir;
+
+	ep = unicast_client_ep_get(conn, dir, handles->ase_handle);
+	if (ep == NULL) {
+		client->dir = 0U;
+		atomic_clear_bit(client->flags, UNICAST_CLIENT_FLAG_BUSY);
+		return -ENOMEM;
+	}
+	client_ep = CONTAINER_OF(ep, struct bt_bap_unicast_client_ep, ep);
+
+	status.id = handles->ase_id;
+	status.state = BT_BAP_EP_STATE_IDLE;
+	net_buf_simple_init_with_data(&buf, &status, sizeof(status));
+	unicast_client_ep_set_status(ep, &buf);
+
+	peer = bt_conn_get_dst(conn);
+	if (client_ep->subscribe.value_handle == BAP_HANDLE_UNUSED) {
+		client_ep->subscribe.value_handle = handles->ase_handle;
+		client_ep->subscribe.ccc_handle = handles->ase_ccc_handle;
+		client_ep->subscribe.end_handle = BT_ATT_LAST_ATTRIBUTE_HANDLE;
+		client_ep->subscribe.notify = unicast_client_ep_notify;
+		client_ep->subscribe.subscribe = NULL;
+		client_ep->subscribe.value = BT_GATT_CCC_NOTIFY;
+		atomic_set_bit(client_ep->subscribe.flags, BT_GATT_SUBSCRIBE_FLAG_VOLATILE);
+		err = bt_gatt_resubscribe(conn->id, peer, &client_ep->subscribe);
+		if (err != 0 && err != -EALREADY) {
+			client_ep->subscribe.value_handle = BAP_HANDLE_UNUSED;
+			unicast_client_discover_complete(conn, err);
+			return 0;
+		}
+	}
+
+	client_ep->cp_handle = handles->cp_handle;
+	if (client->cp_subscribe.value_handle == BAP_HANDLE_UNUSED) {
+		client->cp_subscribe.value_handle = handles->cp_handle;
+		client->cp_subscribe.ccc_handle = handles->cp_ccc_handle;
+		client->cp_subscribe.end_handle = BT_ATT_LAST_ATTRIBUTE_HANDLE;
+		client->cp_subscribe.notify = unicast_client_cp_notify;
+		client->cp_subscribe.subscribe = NULL;
+		client->cp_subscribe.value = BT_GATT_CCC_NOTIFY;
+		atomic_set_bit(client->cp_subscribe.flags, BT_GATT_SUBSCRIBE_FLAG_VOLATILE);
+		err = bt_gatt_resubscribe(conn->id, peer, &client->cp_subscribe);
+		if (err != 0 && err != -EALREADY) {
+			client->cp_subscribe.value_handle = BAP_HANDLE_UNUSED;
+			unicast_client_discover_complete(conn, err);
+			return 0;
+		}
+	}
+
+	unicast_client_notify_endpoint(conn, ep);
+	unicast_client_discover_complete(conn, 0);
+
+	return 0;
+}
+
+int bt_bap_unicast_client_get_handles(struct bt_conn *conn, enum bt_audio_dir dir,
+				      struct bt_bap_unicast_client_handles *handles)
+{
+	struct bt_bap_unicast_client_ep *client_ep;
+	struct unicast_client *client;
+
+	if (conn == NULL || handles == NULL) {
+		return -EINVAL;
+	}
+	client = &uni_cli_insts[bt_conn_index(conn)];
+	client_ep = unicast_client_first_ep(client, dir);
+	if (client_ep == NULL || client_ep->handle == BAP_HANDLE_UNUSED ||
+	    client_ep->cp_handle == BAP_HANDLE_UNUSED ||
+	    client_ep->subscribe.ccc_handle == 0U ||
+	    client_ep->subscribe.ccc_handle == BT_GATT_AUTO_DISCOVER_CCC_HANDLE ||
+	    client->cp_subscribe.ccc_handle == 0U ||
+	    client->cp_subscribe.ccc_handle == BT_GATT_AUTO_DISCOVER_CCC_HANDLE) {
+		return -ENOENT;
+	}
+	handles->cp_handle = client_ep->cp_handle;
+	handles->cp_ccc_handle = client->cp_subscribe.ccc_handle;
+	handles->ase_handle = client_ep->handle;
+	handles->ase_ccc_handle = client_ep->subscribe.ccc_handle;
+	handles->ase_id = client_ep->ep.id;
+
+	return 0;
+}
+
 int bt_bap_unicast_client_register_cb(struct bt_bap_unicast_client_cb *cb)
 {
 	CHECKIF(cb == NULL) {
